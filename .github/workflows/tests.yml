@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+  packages: write
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -46,3 +50,22 @@ jobs:
       - name: Remover container
         if: always()
         run: docker rm -f devops-sre-api
+
+      - name: Login no GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publicar imagem no GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          IMAGE=ghcr.io/${{ github.repository }}
+
+          docker tag devops-sre-lab:test $IMAGE:${{ github.sha }}
+          docker tag devops-sre-lab:test $IMAGE:latest
+
+          docker push $IMAGE:${{ github.sha }}
+          docker push $IMAGE:latest
