@@ -10,3 +10,11 @@ def health_check():                                     # define a função exec
         "service": "devops-sre-lab",
         "version": "1.0.0"
     }
+
+@app.get("/ready")
+def readiness_check():
+    return {
+        "status": "ready",
+        "service": "devops-sre-lab",
+        "version": "1.0.0"
+    }
