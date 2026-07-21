@@ -27,3 +27,22 @@ jobs:
 
       - name: Construir imagem Docker
         run: docker build -t devops-sre-lab:test .
+
+      - name: Iniciar container
+        run: docker run -d --name devops-sre-api -p 8000:8000 devops-sre-lab:test
+      
+      - name: Validar health do container
+        run: |
+          for i in {1..10}; do
+            if curl --fail --silent http://localhost:8000/health; then
+              exit 0
+            fi
+            sleep 2
+          done
+
+          docker logs devops-sre-api
+          exit 1
+      
+      - name: Remover container
+        if: always()
+        run: docker rm -f devops-sre-api
