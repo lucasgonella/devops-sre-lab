@@ -1,6 +1,6 @@
 services:
   api:
-    image: ghcr.io/lucasgonella/devops-sre-lab:1e0100da70210f5cee8ac3ede0bea57bede9d9c0
+    image: "ghcr.io/lucasgonella/devops-sre-lab:${IMAGE_TAG:?IMAGE_TAG não definida}"
     ports:
       - "8000:8000"
     restart: unless-stopped
