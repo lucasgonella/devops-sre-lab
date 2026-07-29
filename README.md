@@ -1,27 +1,28 @@
 # DevOps SRE Lab
 
 ![Status](https://img.shields.io/badge/status-em%20desenvolvimento-yellow)
-![Progresso](https://img.shields.io/badge/progresso-35%25-blue)
+![Progresso](https://img.shields.io/badge/progresso-50%25-blue)
 ![Python](https://img.shields.io/badge/Python-3.13-blue)
 ![FastAPI](https://img.shields.io/badge/FastAPI-API-green)
 ![Docker](https://img.shields.io/badge/Docker-container-blue)
 ![CI](https://img.shields.io/badge/GitHub%20Actions-CI-black)
+![Registry](https://img.shields.io/badge/GHCR-registry-blue)
 
-Laboratório prático para desenvolver competências de **DevOps e SRE** usando uma aplicação real, containerização, integração contínua, publicação de artefatos e implantação automatizada.
+Laboratório prático para desenvolver competências de **DevOps e SRE** usando uma aplicação real, containerização, integração contínua, publicação de artefatos, deploy reproduzível e recuperação automática após falha de validação.
 
 ## Objetivo
 
 Construir uma aplicação pequena, mas com um fluxo próximo ao usado em ambientes reais:
 
 ```text
-Código → testes → imagem Docker → registry → deploy → observabilidade → operação
+Código → testes → imagem Docker → registry → deploy → validação → observabilidade → operação
 ```
 
-O objetivo principal não é apenas desenvolver a API, mas aprender a entregar, executar, monitorar e recuperar o serviço de forma reproduzível.
+O objetivo principal não é apenas desenvolver a API, mas aprender a entregar, executar, monitorar e recuperar o serviço de forma segura e reproduzível.
 
 ## Estado atual
 
-**Progresso estimado: 35%**
+**Progresso estimado: 50%**
 
 > O percentual representa o avanço do laboratório planejado e será atualizado conforme novas etapas forem concluídas.
 
@@ -30,7 +31,7 @@ A aplicação possui endpoints básicos de saúde e prontidão:
 - `GET /health`
 - `GET /ready`
 
-Resposta atual:
+Respostas atuais:
 
 ```json
 {
@@ -40,78 +41,151 @@ Resposta atual:
 }
 ```
 
+```json
+{
+  "status": "ready",
+  "service": "devops-sre-lab",
+  "version": "1.0.0"
+}
+```
+
+O pipeline de CI testa a aplicação, constrói a imagem Docker, executa um smoke test e publica imagens no GitHub Container Registry.
+
+O projeto também possui um script Bash de deploy que:
+
+- valida o arquivo Compose;
+- identifica a versão atualmente em execução;
+- baixa a imagem definida por `IMAGE_TAG`;
+- cria ou atualiza o container;
+- aguarda os endpoints `/health` e `/ready` com tentativas automáticas;
+- executa rollback para a tag anterior quando a validação falha;
+- pode ser chamado de qualquer diretório.
+
+O deploy foi validado localmente. A implantação em uma VM Linux no homelab ainda será realizada.
+
 ## Arquitetura atual
 
 ```text
+Desenvolvedor
+     │
+     ▼
 GitHub Repository
-       │
-       ▼
+     │
+     ▼
+Pull Request
+     │
+     ▼
 GitHub Actions
+  ├─ instala dependências
   ├─ executa pytest
   ├─ constrói a imagem Docker
   ├─ inicia o container
   ├─ valida /health
-  └─ publica a imagem no GHCR
-       │
-       ▼
+  └─ publica SHA + latest no GHCR
+     │
+     ▼
 GitHub Container Registry
-       │
-       ▼
-Docker Compose
-  └─ define como a aplicação será executada
+     │
+     ▼
+Docker Compose + scripts/deploy.sh
+  ├─ resolve IMAGE_TAG
+  ├─ executa pull
+  ├─ executa up -d
+  ├─ valida /health e /ready
+  └─ realiza rollback em caso de falha
+     │
+     ▼
+Servidor Linux
+  └─ próximo ambiente: VM no Proxmox/homelab
 ```
 
+A definição de deploy não depende do Proxmox. O mesmo Compose e o mesmo script poderão ser utilizados futuramente em uma VM na AWS, Azure ou outra nuvem com Docker instalado.
+
 ## O que já foi implementado
+
+### Aplicação e testes
 
 - [x] API criada com FastAPI
 - [x] Endpoint de health check
 - [x] Endpoint de readiness check
 - [x] Testes automatizados com pytest
+
+### Git e colaboração
+
 - [x] Controle de versão com Git
-- [x] Fluxo de desenvolvimento por branches e Pull Requests
+- [x] Repositório no GitHub
+- [x] Desenvolvimento por branches
+- [x] Pull Requests antes do merge na `main`
+- [x] Exclusão das branches após o merge
+
+### Containerização
+
+- [x] Dockerfile com Python 3.13 slim
+- [x] Arquivo `.dockerignore`
+- [x] Build local da imagem
+- [x] Execução local do container
+- [x] Smoke test da API empacotada
+
+### Integração contínua e registry
+
 - [x] Pipeline de CI com GitHub Actions
+- [x] Testes em Pull Requests e pushes na `main`
 - [x] Build automático da imagem Docker
 - [x] Smoke test do container no pipeline
 - [x] Publicação da imagem no GitHub Container Registry
-- [x] Tags de imagem com SHA do commit e `latest`
-- [x] Docker Compose com imagem versionada
-- [x] Mapeamento da porta `8000`
+- [x] Tags de imagem com SHA completo do commit
+- [x] Tag adicional `latest`
+- [x] Build único seguido por teste, tag e publicação do mesmo artefato
+
+### Docker Compose e deploy
+
+- [x] Arquivo `docker-compose.yml`
+- [x] Mapeamento de porta `8000:8000`
 - [x] Política de reinício `unless-stopped`
 - [x] Teste de recuperação após falha do processo principal
+- [x] Uso obrigatório da variável `IMAGE_TAG`
+- [x] Bloqueio do deploy quando `IMAGE_TAG` não está definida
+- [x] Arquivo `.env.example`
+- [x] Proteção do arquivo `.env` no `.gitignore`
+- [x] Script portátil `scripts/deploy.sh`
+- [x] Validação do Compose antes do deploy
+- [x] Download da imagem com `docker compose pull`
+- [x] Atualização idempotente com `docker compose up -d`
+- [x] Retry automático para `/health` e `/ready`
+- [x] Captura da tag anteriormente executada
+- [x] Rollback automático após falha de validação
+- [x] Teste controlado da lógica de rollback
+- [x] Execução do script a partir de outro diretório
 
 ## Próximo passo
 
-### Implantar a aplicação em um servidor usando Docker Compose
+### Validar os arquivos de deploy no CI
 
-O próximo marco é fazer o Compose deixar de ser apenas uma definição local e passar a controlar uma implantação real.
+O próximo marco é fazer o GitHub Actions validar também os arquivos que controlam o deploy.
 
-Fluxo planejado:
+Validações planejadas:
 
 ```text
-Merge na main
+Pull Request
     ↓
-CI testa e publica a imagem no GHCR
+bash -n scripts/deploy.sh
     ↓
-Servidor recebe a nova versão
+IMAGE_TAG=<tag-de-teste> docker compose config
     ↓
-docker compose pull
-    ↓
-docker compose up -d
-    ↓
-Health check confirma o deploy
+testes, build e smoke test atuais
 ```
 
-Objetivos dessa etapa:
+Objetivos imediatos:
 
-- [ ] Preparar um servidor Linux para execução da aplicação
-- [ ] Instalar Docker e Docker Compose
-- [ ] Clonar ou disponibilizar o arquivo Compose no servidor
-- [ ] Autenticar o servidor no GHCR, caso necessário
-- [ ] Subir a aplicação com `docker compose up -d`
-- [ ] Validar o endpoint `/health`
-- [ ] Definir processo de atualização com `pull` e `up -d`
+- [ ] Validar a sintaxe do `scripts/deploy.sh` no CI
+- [ ] Validar o `docker-compose.yml` no CI
+- [ ] Criar o documento `docs/git-workflow.md`
+- [ ] Provisionar uma VM Ubuntu Server no Proxmox
+- [ ] Instalar Docker e Docker Compose na VM
+- [ ] Configurar acesso remoto seguro ao homelab
+- [ ] Executar o primeiro deploy no servidor Linux
 - [ ] Automatizar o deploy após merge na `main`
-- [ ] Criar estratégia básica de rollback
+- [ ] Armazenar IP, usuário e chave SSH em GitHub Secrets
 
 ## Roadmap
 
@@ -138,25 +212,29 @@ Objetivos dessa etapa:
 - [x] Publicar imagem no GHCR
 - [x] Versionar imagem pelo SHA do commit
 
-### Fase 4 — Deploy com Docker Compose — 35%
+### Fase 4 — Deploy com Docker Compose — 75%
 
 - [x] Criar arquivo Compose
 - [x] Definir imagem, porta e restart policy
 - [x] Validar execução local
 - [x] Testar reinício após falha da aplicação
-- [ ] Validar o Compose no CI
+- [x] Tornar a tag da imagem configurável
+- [x] Criar script de deploy portátil
+- [x] Validar health e readiness com retry
+- [x] Implementar rollback automático
+- [x] Testar a lógica de rollback localmente
+- [ ] Validar Compose e script no CI
 - [ ] Implantar em servidor Linux
-- [ ] Automatizar atualização da aplicação
-- [ ] Implementar rollback
+- [ ] Automatizar a atualização remota da aplicação
 
-### Fase 5 — Configuração e persistência — 0%
+### Fase 5 — Configuração e persistência — 25%
 
-- [ ] Variáveis de ambiente
-- [ ] Arquivo `.env.example`
-- [ ] Gerenciamento de secrets
-- [ ] Banco de dados PostgreSQL
-- [ ] Volumes persistentes
-- [ ] Migrações de banco
+- [x] Introduzir variável de ambiente para a tag da imagem
+- [x] Criar arquivo `.env.example`
+- [ ] Gerenciar secrets de deploy
+- [ ] Adicionar banco de dados PostgreSQL
+- [ ] Criar volumes persistentes
+- [ ] Implementar migrações de banco
 
 ### Fase 6 — Observabilidade — 0%
 
@@ -174,7 +252,7 @@ Objetivos dessa etapa:
 - [ ] Definir orçamento de erro
 - [ ] Criar runbooks
 - [ ] Simular incidentes
-- [ ] Testar recuperação e rollback
+- [ ] Testar recuperação e rollback entre versões diferentes
 - [ ] Documentar post-mortem
 
 ### Fase 8 — Infraestrutura como código e evolução — 0%
@@ -192,9 +270,12 @@ Objetivos dessa etapa:
 ├── .github/
 │   └── workflows/
 │       └── tests.yml
+├── scripts/
+│   └── deploy.sh
 ├── tests/
 │   └── test_health.py
 ├── .dockerignore
+├── .env.example
 ├── .gitignore
 ├── docker-compose.yml
 ├── Dockerfile
@@ -205,15 +286,51 @@ Objetivos dessa etapa:
 
 ## Executar localmente com Docker Compose
 
-```bash
-docker compose up -d
-```
-
-Validar a aplicação:
+### 1. Criar o arquivo local de ambiente
 
 ```bash
-curl http://localhost:8000/health
+cp .env.example .env
 ```
+
+Edite o `.env` e informe uma tag existente no GHCR:
+
+```env
+IMAGE_TAG=<sha-completo-do-commit>
+```
+
+O arquivo `.env` não é versionado.
+
+### 2. Validar a configuração
+
+```bash
+docker compose config
+```
+
+Sem uma `IMAGE_TAG`, o Compose interrompe a execução:
+
+```text
+required variable IMAGE_TAG is missing a value: IMAGE_TAG não definida
+```
+
+### 3. Executar o deploy automatizado
+
+```bash
+./scripts/deploy.sh
+```
+
+Fluxo executado:
+
+```text
+validar Compose
+→ identificar versão anterior
+→ baixar imagem
+→ atualizar container
+→ aguardar /health
+→ aguardar /ready
+→ aprovar deploy ou executar rollback
+```
+
+### 4. Consultar o ambiente
 
 Visualizar os containers:
 
@@ -227,26 +344,65 @@ Visualizar logs:
 docker compose logs -f api
 ```
 
+Validar manualmente:
+
+```bash
+curl http://localhost:8000/health
+curl http://localhost:8000/ready
+```
+
 Encerrar o ambiente:
 
 ```bash
 docker compose down
 ```
 
+## Como funciona o rollback atual
+
+Antes de atualizar o container, o script identifica a imagem em execução e extrai sua tag.
+
+```text
+container atual
+→ referência da imagem
+→ PREVIOUS_TAG
+```
+
+Caso `/health` ou `/ready` não responda após 15 tentativas:
+
+```text
+validação falha
+→ IMAGE_TAG recebe PREVIOUS_TAG
+→ docker compose pull
+→ docker compose up -d
+→ /health e /ready são validados novamente
+```
+
+No primeiro deploy não existe uma versão anterior, portanto o rollback ainda não está disponível.
+
+A lógica foi testada localmente com uma rota inexistente. O teste entre duas imagens realmente diferentes será realizado em uma etapa futura.
+
 ## Conceitos praticados
 
 - Git e GitHub
 - Branches e Pull Requests
-- CI/CD
+- Integração contínua
+- Fundamentos de entrega contínua
 - Testes automatizados
 - Docker
 - Docker Compose
 - Container Registry
 - Versionamento de artefatos
+- Tags e digests de imagens
 - Health checks
 - Readiness checks
 - Restart policy
+- Variáveis de ambiente
+- Scripts Bash
+- Strict mode do Bash
+- Retry
+- Idempotência
 - Deploy reproduzível
+- Rollback
 - Recuperação de serviço
 
 ## Resultado esperado
