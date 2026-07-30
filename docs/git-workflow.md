@@ -55,7 +55,7 @@ Exemplos:
 feature/add-metrics
 fix/deploy-rollback
 ci/validate-deploy
- docs/update-project-status
+docs/update-project-status
 ```
 
 ## 3. Revisar as alterações locais
