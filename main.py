@@ -8,7 +8,7 @@ def health_check():                                     # define a função exec
     return {                                            # conteúdo da resposta
         "status": "healthy",
         "service": "devops-sre-lab",
-        "version": "1.0.0"
+        "version": "1.0.1"
     }
 
 @app.get("/ready")
@@ -16,5 +16,5 @@ def readiness_check():
     return {
         "status": "ready",
         "service": "devops-sre-lab",
-        "version": "1.0.0"
+        "version": "1.0.1"
     }
