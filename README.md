@@ -1,14 +1,15 @@
 # DevOps SRE Lab
 
 ![Status](https://img.shields.io/badge/status-em%20desenvolvimento-yellow)
-![Fase](https://img.shields.io/badge/fase-4%20deploy-blue)
+![Fase](https://img.shields.io/badge/fase-4%20deploy%2FCD-blue)
 ![Python](https://img.shields.io/badge/Python-3.13-blue)
 ![FastAPI](https://img.shields.io/badge/FastAPI-API-green)
 ![Docker](https://img.shields.io/badge/Docker-container-blue)
 ![CI](https://img.shields.io/badge/GitHub%20Actions-CI-black)
+![CD](https://img.shields.io/badge/GitHub%20Actions-CD-black)
 ![Registry](https://img.shields.io/badge/GHCR-registry-blue)
 
-Laboratório prático para desenvolver competências de **DevOps e SRE** usando uma aplicação real, testes automatizados, containerização, integração contínua, publicação de artefatos, deploy reproduzível, validação operacional e rollback.
+Laboratório prático para desenvolver competências de **DevOps e SRE** usando uma aplicação real, testes automatizados, containerização, integração contínua, publicação de artefatos, deploy reproduzível, CD automatizado, validação operacional e rollback.
 
 ## Objetivo
 
@@ -25,11 +26,11 @@ Imagem Docker versionada
   ↓
 Container Registry
   ↓
+CD automatizado
+  ↓
 Deploy em servidor Linux
   ↓
 Health e readiness checks
-  ↓
-CD automatizado
   ↓
 Observabilidade e operação
 ```
@@ -64,19 +65,27 @@ O pipeline de CI atualmente:
 - publica a imagem no GHCR após push na `main`;
 - publica as tags do SHA completo do commit e `latest`.
 
-O primeiro servidor Linux do laboratório já foi provisionado no Proxmox:
+O laboratório possui duas VMs separadas no Proxmox:
 
 ```text
-app01
+runner01 — 192.168.1.111
 ├─ Ubuntu Server 26.04.1 LTS
-├─ IP: 192.168.1.110/24
+├─ GitHub Actions self-hosted runner
+├─ usuário runner sem sudo amplo
+└─ sem acesso ao Docker
+
+app01 — 192.168.1.110
+├─ Ubuntu Server 26.04.1 LTS
 ├─ Docker Engine
 ├─ Docker Compose plugin
 ├─ QEMU Guest Agent
+├─ usuário deploy sem sudo amplo
 └─ aplicação publicada na porta 8000
 ```
 
-O primeiro deploy real usando uma imagem versionada pelo SHA do commit foi executado com sucesso na `app01`. Os endpoints `/health` e `/ready` foram validados a partir de outro host da rede com HTTP 200.
+O primeiro **CD automatizado de ponta a ponta** foi executado com sucesso. Após o workflow `Tests` concluir com sucesso na `main`, o workflow `Deploy` foi disparado automaticamente, utilizou a `runner01`, conectou na `app01` via SSH e executou o deploy usando o SHA exato aprovado pelo CI.
+
+Após o deploy, a própria `runner01` validou `/health` e `/ready` na `app01` com sucesso.
 
 ## Arquitetura implementada
 
@@ -102,49 +111,67 @@ GitHub-hosted runner
 GitHub Container Registry
      │
      ▼
-Imagem versionada
+workflow Deploy
      │
      ▼
-app01 — Ubuntu Server
-  ├─ Docker Compose
-  ├─ wrapper privilegiado de deploy
-  ├─ /health
-  └─ /ready
+runner01 — self-hosted runner
+     │
+     ├─ sem checkout do repositório
+     ├─ sem Docker
+     ├─ sem sudo amplo
+     └─ SSH com chave dedicada
+     │
+     ▼
+app01 — usuário deploy
+     │
+     └─ sudo restrito
+          │
+          ▼
+/usr/local/sbin/deploy-app <SHA>
+          │
+          ├─ Docker Compose
+          ├─ /health
+          ├─ /ready
+          └─ rollback
 ```
 
 A imagem testada pelo pipeline é a mesma imagem posteriormente etiquetada, publicada no registry e utilizada no servidor.
 
-## Segurança do deploy no servidor
+## Segurança do deploy
 
-Na `app01`, o usuário de automação não possui acesso direto ao socket Docker.
+O modelo atual aplica separação entre o executor do workflow e o servidor da aplicação.
 
-O modelo atual é:
+### runner01
 
-```text
-deploy
-  │
-  └─ sudo restrito
-       │
-       ▼
-/usr/local/sbin/deploy-app
-       │
-       ├─ valida SHA completo de 40 caracteres
-       ├─ executa Docker Compose como root
-       ├─ valida /health e /ready
-       └─ realiza rollback quando necessário
-```
+- self-hosted runner executado com o usuário `runner`;
+- `runner` fora dos grupos `sudo` e `lxd`;
+- sem acesso ao Docker;
+- chave SSH dedicada somente para comunicação com a `app01`;
+- workflow de CD sem checkout do código do repositório na self-hosted runner.
 
-Controles aplicados:
+### app01
 
-- usuário `deploy` fora do grupo `docker`;
+- usuário `deploy` fora dos grupos `sudo`, `lxd` e `docker`;
 - diretório `/opt/devops-sre-lab` pertencente a `root:deploy` e modo `750`;
 - `docker-compose.yml` pertencente a `root:deploy` e modo `640`;
 - wrapper `/usr/local/sbin/deploy-app` pertencente a `root:deploy` e modo `750`;
 - regra dedicada no `sudoers` liberando somente o wrapper;
 - execução não interativa com `NOPASSWD` somente para o comando autorizado;
-- tag de deploy restrita ao SHA completo do commit.
+- tag de deploy restrita ao SHA completo de 40 caracteres.
 
-Durante o primeiro teste foi identificado um problema real no wrapper: o Compose era consultado antes da variável `IMAGE_TAG` ser exportada. A ordem foi corrigida e o deploy passou a funcionar normalmente.
+O caminho de privilégio é:
+
+```text
+runner
+  ↓ SSH
+ deploy
+  ↓ sudo restrito
+/usr/local/sbin/deploy-app <SHA>
+  ↓
+Docker Compose
+```
+
+Durante o primeiro teste manual foi identificado um problema real no wrapper: o Compose era consultado antes da variável `IMAGE_TAG` ser exportada. A ordem foi corrigida e o deploy passou a funcionar normalmente.
 
 A proposta detalhada está em [`docs/secure-deployment.md`](docs/secure-deployment.md).
 
@@ -204,18 +231,35 @@ A proposta detalhada está em [`docs/secure-deployment.md`](docs/secure-deployme
 - [x] Validar `/health` externamente
 - [x] Validar `/ready` externamente
 
+### CD com runner dedicado
+
+- [x] Provisionar a VM `runner01`
+- [x] Configurar IP fixo `192.168.1.111`
+- [x] Instalar e registrar o self-hosted runner
+- [x] Executar o runner como serviço do systemd
+- [x] Remover `sudo` e `lxd` do usuário `runner`
+- [x] Criar usuário administrativo separado nas duas VMs
+- [x] Remover `sudo` e `lxd` do usuário `deploy`
+- [x] Configurar conectividade entre `runner01` e `app01`
+- [x] Configurar chave SSH dedicada
+- [x] Validar execução remota do wrapper sem senha
+- [x] Criar workflow de CD após sucesso do workflow `Tests`
+- [x] Usar o SHA exato aprovado pelo CI
+- [x] Evitar checkout do repositório na self-hosted runner
+- [x] Executar primeiro deploy automatizado ponta a ponta
+- [x] Validar `/health` e `/ready` pela `runner01` após o deploy
+
 ## Próximo marco
 
-### Automatizar o CD com runner dedicado
+### Rollback real entre versões distintas
 
-- [ ] Provisionar a VM `runner01`
-- [ ] Instalar e registrar o self-hosted runner
-- [ ] Configurar conectividade entre `runner01` e `app01`
-- [ ] Configurar autenticação remota segura
-- [ ] Criar o workflow de CD após merge na `main`
-- [ ] Fazer o workflow enviar o SHA aprovado para a `app01`
-- [ ] Validar o deploy automático ponta a ponta
-- [ ] Testar rollback entre duas imagens realmente diferentes
+- [ ] Criar uma segunda versão funcional da aplicação
+- [ ] Publicar a nova imagem pelo fluxo normal de CI
+- [ ] Validar atualização automática para a nova versão
+- [ ] Criar uma versão propositalmente inválida para teste controlado
+- [ ] Confirmar falha de health/readiness
+- [ ] Confirmar rollback automático para a versão anterior
+- [ ] Registrar o cenário e o resultado na documentação
 
 ## Roadmap
 
@@ -243,7 +287,7 @@ A proposta detalhada está em [`docs/secure-deployment.md`](docs/secure-deployme
 - [x] Publicar imagem no GHCR
 - [x] Versionar imagem pelo SHA do commit
 
-### Fase 4 — Deploy com Docker Compose — em andamento
+### Fase 4 — Deploy e CD — em andamento
 
 - [x] Criar arquivo Compose
 - [x] Definir imagem, porta e restart policy
@@ -256,7 +300,9 @@ A proposta detalhada está em [`docs/secure-deployment.md`](docs/secure-deployme
 - [x] Validar Compose e script no CI
 - [x] Implantar em servidor Linux
 - [x] Executar deploy manual controlado por SHA
-- [ ] Automatizar a atualização remota da aplicação
+- [x] Provisionar self-hosted runner dedicado
+- [x] Automatizar a atualização remota da aplicação
+- [x] Validar primeiro CD ponta a ponta
 - [ ] Testar rollback real entre duas versões distintas
 
 ### Fase 5 — Configuração e persistência
@@ -301,6 +347,7 @@ A proposta detalhada está em [`docs/secure-deployment.md`](docs/secure-deployme
 .
 ├── .github/
 │   └── workflows/
+│       ├── deploy.yml
 │       └── tests.yml
 ├── docs/
 │   ├── git-workflow.md
@@ -388,6 +435,22 @@ validar SHA
 → concluir ou executar rollback
 ```
 
+## CD automatizado
+
+O workflow `Deploy` é disparado somente quando o workflow `Tests` termina com sucesso na `main`.
+
+```text
+Tests concluído com sucesso
+→ workflow_run.head_sha
+→ runner01
+→ SSH deploy@app01
+→ sudo -n deploy-app <SHA>
+→ valida /health
+→ valida /ready
+```
+
+A self-hosted runner não precisa executar Docker e não faz checkout do repositório para realizar o deploy.
+
 ## Como funciona o rollback atual
 
 Antes de atualizar o container, o wrapper identifica a imagem em execução e extrai sua tag.
@@ -402,7 +465,7 @@ validação falha
 → /health e /ready são validados novamente
 ```
 
-A lógica de rollback já foi testada localmente. O próximo teste será entre duas imagens realmente diferentes no servidor Linux.
+A lógica de rollback já foi testada localmente. O próximo teste será entre duas imagens realmente diferentes na `app01`, acionadas pelo fluxo completo de CI/CD.
 
 ## Fluxo de trabalho Git
 
@@ -412,7 +475,8 @@ O processo de criação de branches, commits, Pull Requests, validação e limpe
 
 - Git, branches e Pull Requests
 - Integração contínua
-- Fundamentos de entrega contínua
+- Entrega contínua
+- GitHub Actions hosted e self-hosted runners
 - Testes automatizados
 - Docker e Docker Compose
 - Container Registry
@@ -425,10 +489,12 @@ O processo de criação de branches, commits, Pull Requests, validação e limpe
 - Retry e idempotência
 - Deploy reproduzível
 - Rollback
+- SSH com chave dedicada
 - Permissões Linux
 - Princípio do menor privilégio
 - Segurança de automações
 - Sudoers com comando restrito
+- Separação entre runner e servidor da aplicação
 - Deploy por artefato imutável identificado por SHA
 
 ## Resultado esperado
