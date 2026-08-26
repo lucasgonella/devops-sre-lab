@@ -8,7 +8,7 @@
 ![CI](https://img.shields.io/badge/GitHub%20Actions-CI-black)
 ![Registry](https://img.shields.io/badge/GHCR-registry-blue)
 
-Laboratório prático para desenvolver competências de **DevOps e SRE** usando uma aplicação real, testes automatizados, containerização, integração contínua, publicação de artefatos, deploy reproduzível e rollback.
+Laboratório prático para desenvolver competências de **DevOps e SRE** usando uma aplicação real, testes automatizados, containerização, integração contínua, publicação de artefatos, deploy reproduzível, validação operacional e rollback.
 
 ## Objetivo
 
@@ -25,9 +25,11 @@ Imagem Docker versionada
   ↓
 Container Registry
   ↓
-Deploy
+Deploy em servidor Linux
   ↓
 Health e readiness checks
+  ↓
+CD automatizado
   ↓
 Observabilidade e operação
 ```
@@ -62,17 +64,19 @@ O pipeline de CI atualmente:
 - publica a imagem no GHCR após push na `main`;
 - publica as tags do SHA completo do commit e `latest`.
 
-O script `scripts/deploy.sh`:
+O primeiro servidor Linux do laboratório já foi provisionado no Proxmox:
 
-- pode ser executado a partir de qualquer diretório;
-- valida a configuração do Docker Compose;
-- identifica a tag atualmente em execução;
-- baixa a imagem definida por `IMAGE_TAG`;
-- atualiza o serviço de forma idempotente;
-- aguarda `/health` e `/ready` com retry;
-- executa rollback para a tag anterior quando a validação falha.
+```text
+app01
+├─ Ubuntu Server 26.04.1 LTS
+├─ IP: 192.168.1.110/24
+├─ Docker Engine
+├─ Docker Compose plugin
+├─ QEMU Guest Agent
+└─ aplicação publicada na porta 8000
+```
 
-O fluxo foi validado localmente. O deploy em um servidor Linux e a automação de CD ainda não foram implementados.
+O primeiro deploy real usando uma imagem versionada pelo SHA do commit foi executado com sucesso na `app01`. Os endpoints `/health` e `/ready` foram validados a partir de outro host da rede com HTTP 200.
 
 ## Arquitetura implementada
 
@@ -98,42 +102,49 @@ GitHub-hosted runner
 GitHub Container Registry
      │
      ▼
-Imagem pronta para deploy
+Imagem versionada
+     │
+     ▼
+app01 — Ubuntu Server
+  ├─ Docker Compose
+  ├─ wrapper privilegiado de deploy
+  ├─ /health
+  └─ /ready
 ```
 
-A imagem testada pelo pipeline é a mesma imagem posteriormente etiquetada e publicada no registry.
+A imagem testada pelo pipeline é a mesma imagem posteriormente etiquetada, publicada no registry e utilizada no servidor.
 
-## Arquitetura planejada para o CD
+## Segurança do deploy no servidor
 
-O próximo marco é realizar o primeiro deploy seguro no homelab.
+Na `app01`, o usuário de automação não possui acesso direto ao socket Docker.
+
+O modelo atual é:
 
 ```text
-GitHub
+deploy
   │
-  ├─ CI em runner hospedado pelo GitHub
-  │
-  └─ CD em self-hosted runner dedicado
-              │
-              │ rede privada
-              ▼
-        Servidor da aplicação
-              │
-              ├─ usuário deploy
-              ├─ sudo restrito a um comando
-              ├─ script privilegiado protegido
-              └─ Docker Compose + validação + rollback
+  └─ sudo restrito
+       │
+       ▼
+/usr/local/sbin/deploy-app
+       │
+       ├─ valida SHA completo de 40 caracteres
+       ├─ executa Docker Compose como root
+       ├─ valida /health e /ready
+       └─ realiza rollback quando necessário
 ```
 
-Controles planejados:
+Controles aplicados:
 
-- executar o self-hosted runner em uma VM separada do servidor da aplicação;
-- utilizar conectividade privada entre as VMs;
-- usar um usuário dedicado chamado `deploy`;
-- não conceder shell irrestrito de `root` ao usuário de automação;
-- liberar no `sudoers` somente o comando exato de deploy;
-- manter o script privilegiado, o Compose e seus diretórios protegidos contra escrita pelo usuário `deploy`;
-- usar caminhos absolutos e argumentos controlados no script privilegiado;
-- manter secrets fora do repositório.
+- usuário `deploy` fora do grupo `docker`;
+- diretório `/opt/devops-sre-lab` pertencente a `root:deploy` e modo `750`;
+- `docker-compose.yml` pertencente a `root:deploy` e modo `640`;
+- wrapper `/usr/local/sbin/deploy-app` pertencente a `root:deploy` e modo `750`;
+- regra dedicada no `sudoers` liberando somente o wrapper;
+- execução não interativa com `NOPASSWD` somente para o comando autorizado;
+- tag de deploy restrita ao SHA completo do commit.
+
+Durante o primeiro teste foi identificado um problema real no wrapper: o Compose era consultado antes da variável `IMAGE_TAG` ser exportada. A ordem foi corrigida e o deploy passou a funcionar normalmente.
 
 A proposta detalhada está em [`docs/secure-deployment.md`](docs/secure-deployment.md).
 
@@ -176,39 +187,34 @@ A proposta detalhada está em [`docs/secure-deployment.md`](docs/secure-deployme
 - [x] Tag adicional `latest`
 - [x] Build único seguido por teste, tag e publicação do mesmo artefato
 
-### Docker Compose e deploy local
+### Deploy em servidor Linux
 
-- [x] Arquivo `docker-compose.yml`
-- [x] Mapeamento de porta `8000:8000`
-- [x] Política de reinício `unless-stopped`
-- [x] Uso obrigatório da variável `IMAGE_TAG`
-- [x] Bloqueio do deploy quando `IMAGE_TAG` não está definida
-- [x] Arquivo `.env.example`
-- [x] Proteção do arquivo `.env` no `.gitignore`
-- [x] Script portátil `scripts/deploy.sh`
-- [x] Validação do Compose antes do deploy
-- [x] Download da imagem com `docker compose pull`
-- [x] Atualização idempotente com `docker compose up -d`
-- [x] Retry automático para `/health` e `/ready`
-- [x] Captura da tag anteriormente executada
-- [x] Rollback automático após falha de validação
-- [x] Teste controlado da lógica de rollback
-- [x] Execução do script a partir de outro diretório
+- [x] Provisionar a VM `app01`
+- [x] Configurar IP fixo
+- [x] Instalar QEMU Guest Agent
+- [x] Instalar Docker Engine
+- [x] Instalar Docker Compose plugin
+- [x] Manter o usuário `deploy` fora do grupo `docker`
+- [x] Criar diretório protegido da aplicação
+- [x] Instalar Compose protegido contra escrita pelo usuário de automação
+- [x] Criar wrapper privilegiado de deploy
+- [x] Restringir o wrapper a SHA completo de commit
+- [x] Configurar regra mínima no `sudoers`
+- [x] Executar primeiro deploy real a partir do GHCR
+- [x] Validar `/health` externamente
+- [x] Validar `/ready` externamente
 
 ## Próximo marco
 
-### Primeiro CD seguro no homelab
+### Automatizar o CD com runner dedicado
 
-- [ ] Provisionar uma VM para o self-hosted runner
-- [ ] Provisionar uma VM separada para a aplicação
-- [ ] Instalar Docker e Docker Compose no servidor da aplicação
-- [ ] Configurar conectividade privada entre as VMs
-- [ ] Criar o usuário de automação `deploy`
-- [ ] Instalar o script privilegiado de deploy como arquivo pertencente ao `root`
-- [ ] Proteger o Compose e os diretórios utilizados pelo script
-- [ ] Configurar uma regra mínima no `sudoers`
+- [ ] Provisionar a VM `runner01`
+- [ ] Instalar e registrar o self-hosted runner
+- [ ] Configurar conectividade entre `runner01` e `app01`
+- [ ] Configurar autenticação remota segura
 - [ ] Criar o workflow de CD após merge na `main`
-- [ ] Executar o primeiro deploy remoto
+- [ ] Fazer o workflow enviar o SHA aprovado para a `app01`
+- [ ] Validar o deploy automático ponta a ponta
 - [ ] Testar rollback entre duas imagens realmente diferentes
 
 ## Roadmap
@@ -248,8 +254,10 @@ A proposta detalhada está em [`docs/secure-deployment.md`](docs/secure-deployme
 - [x] Implementar rollback automático
 - [x] Testar a lógica de rollback localmente
 - [x] Validar Compose e script no CI
-- [ ] Implantar em servidor Linux
+- [x] Implantar em servidor Linux
+- [x] Executar deploy manual controlado por SHA
 - [ ] Automatizar a atualização remota da aplicação
+- [ ] Testar rollback real entre duas versões distintas
 
 ### Fase 5 — Configuração e persistência
 
@@ -357,32 +365,34 @@ validar Compose
 → aprovar deploy ou executar rollback
 ```
 
-### 4. Consultar o ambiente
+## Deploy controlado na app01
+
+O servidor utiliza um wrapper protegido:
 
 ```bash
-docker compose ps
-docker compose logs -f api
-curl http://localhost:8000/health
-curl http://localhost:8000/ready
+sudo -n /usr/local/sbin/deploy-app <sha-completo-do-commit>
 ```
 
-Para encerrar:
+O wrapper aceita somente um SHA hexadecimal completo de 40 caracteres.
 
-```bash
-docker compose down
+Fluxo:
+
+```text
+validar SHA
+→ definir IMAGE_TAG
+→ identificar versão anterior
+→ validar Compose
+→ baixar imagem do GHCR
+→ atualizar container
+→ validar /health e /ready
+→ concluir ou executar rollback
 ```
 
 ## Como funciona o rollback atual
 
-Antes de atualizar o container, o script identifica a imagem em execução e extrai sua tag.
+Antes de atualizar o container, o wrapper identifica a imagem em execução e extrai sua tag.
 
-```text
-container atual
-→ referência da imagem
-→ PREVIOUS_TAG
-```
-
-Caso `/health` ou `/ready` não responda após 15 tentativas:
+Caso `/health` ou `/ready` não responda após as tentativas configuradas:
 
 ```text
 validação falha
@@ -392,9 +402,7 @@ validação falha
 → /health e /ready são validados novamente
 ```
 
-No primeiro deploy não existe uma versão anterior, portanto o rollback ainda não está disponível.
-
-A lógica foi testada localmente com uma rota inexistente. O teste entre duas imagens realmente diferentes permanece como próximo passo.
+A lógica de rollback já foi testada localmente. O próximo teste será entre duas imagens realmente diferentes no servidor Linux.
 
 ## Fluxo de trabalho Git
 
@@ -420,6 +428,8 @@ O processo de criação de branches, commits, Pull Requests, validação e limpe
 - Permissões Linux
 - Princípio do menor privilégio
 - Segurança de automações
+- Sudoers com comando restrito
+- Deploy por artefato imutável identificado por SHA
 
 ## Resultado esperado
 
