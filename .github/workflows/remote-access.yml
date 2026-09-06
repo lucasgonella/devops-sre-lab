@@ -23,22 +23,37 @@ jobs:
         env:
           TS_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
           EXPECTED_RUNNER: ${{ runner.name }}
+          RESCUE_PUBLIC_KEY: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAID5NXx7LYWWkgzKmQoPcjPqD07KgEV9JUnL1NUH/pTG1
         run: |
           set -Eeuo pipefail
           set +x
           umask 077
 
           [[ "$EXPECTED_RUNNER" == runner01 ]] || { echo 'Runner inesperado.' >&2; exit 1; }
+          [[ "$(id -un)" == runner ]] || { echo 'Usuario inesperado: requer runner.' >&2; exit 1; }
           [[ -n "$TS_AUTHKEY" ]] || { echo 'Secret TAILSCALE_AUTHKEY ausente.' >&2; exit 1; }
           [[ "$(uname -m)" == x86_64 ]] || exit 1
-          for tool in curl tar sha256sum ssh-keyscan ssh-keygen timeout; do
+          for tool in curl tar sha256sum ssh-keyscan ssh-keygen timeout getent awk date; do
             command -v "$tool" >/dev/null || { echo "Ferramenta ausente: $tool" >&2; exit 1; }
           done
 
           ts_dir=$(mktemp -d /tmp/homelab-ts.XXXXXX)
           ts_pid=''
+          rescue_line=''
+          auth_file=''
           cleanup() {
             set +e
+            # Remover apenas a linha desta execucao, preservando as outras chaves.
+            if [[ -n "$rescue_line" && -f "$auth_file" && ! -L "$auth_file" ]]; then
+              auth_tmp=$(mktemp "${auth_file}.cleanup.XXXXXX")
+              if [[ -n "$auth_tmp" ]] && awk -v key="$rescue_line" '$0 != key' "$auth_file" > "$auth_tmp"; then
+                chmod 600 "$auth_tmp"
+                mv -f -- "$auth_tmp" "$auth_file"
+              else
+                echo 'Falha ao remover chave temporaria; ela possui expiracao automatica.' >&2
+                [[ -n "$auth_tmp" ]] && rm -f -- "$auth_tmp"
+              fi
+            fi
             if [[ -n "$ts_pid" ]]; then
               timeout 10 "$ts_dir/tailscale" --socket="$ts_dir/tailscaled.sock" logout >/dev/null 2>&1
               kill "$ts_pid" 2>/dev/null
@@ -51,6 +66,26 @@ jobs:
           trap 'exit 143' TERM
           printf '%s' "$TS_AUTHKEY" > "$ts_dir/authkey"
           unset TS_AUTHKEY
+
+          # A chave abre somente su - gonella, que ainda exige a senha de gonella.
+          [[ -x /usr/bin/su ]] || { echo 'su indisponivel.' >&2; exit 1; }
+          getent passwd gonella >/dev/null || { echo 'Conta gonella ausente.' >&2; exit 1; }
+          runner_home=$(getent passwd runner | awk -F: '{print $6}')
+          runner_shell=$(getent passwd runner | awk -F: '{print $7}')
+          case "$runner_shell" in
+            */nologin|*/false|'') echo 'Conta runner sem shell de login.' >&2; exit 1 ;;
+          esac
+          [[ "$runner_home" == /home/runner ]] || { echo 'Home inesperado.' >&2; exit 1; }
+          ssh_dir="$runner_home/.ssh"
+          auth_file="$ssh_dir/authorized_keys"
+          [[ ! -L "$ssh_dir" && ! -L "$auth_file" ]] || { echo 'Caminho SSH simbolico: revisao necessaria.' >&2; exit 1; }
+          mkdir -p "$ssh_dir"
+          [[ -O "$ssh_dir" && -w "$ssh_dir" ]] || exit 1
+          if [[ -e "$auth_file" ]]; then
+            [[ -f "$auth_file" && -O "$auth_file" && -w "$auth_file" ]] || exit 1
+          fi
+          printf '%s\n' "$RESCUE_PUBLIC_KEY" > "$ts_dir/rescue.pub"
+          ssh-keygen -lf "$ts_dir/rescue.pub"
 
           # Confirmar SSH local antes de consumir a chave de uso unico.
           ssh-keyscan -T 5 -t ed25519 127.0.0.1 > "$ts_dir/ssh-host.pub" 2>/dev/null
@@ -96,8 +131,17 @@ jobs:
           rm -f -- "$ts_dir/authkey"
           ts_ip=$("$ts_dir/tailscale" --socket="$ts_dir/tailscaled.sock" ip -4)
           [[ "$ts_ip" =~ ^100\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'IP Tailscale inesperado.' >&2; exit 1; }
-          echo "ACESSO PRONTO: ssh gonella@$ts_ip"
-          echo 'Use sua chave SSH habitual e confira o fingerprint acima.'
+          # Userspace encaminha a conexao SSH para localhost. PTY permite a senha
+          # de su; forwarding fica bloqueado. A chave expira mesmo apos falha de cleanup.
+          rescue_expiry=$(date -u -d '+65 minutes' +%Y%m%d%H%M%SZ)
+          rescue_line="restrict,pty,from=\"127.0.0.1,::1\",expiry-time=\"$rescue_expiry\",command=\"/usr/bin/su - gonella\" $RESCUE_PUBLIC_KEY homelab-resgate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          chmod 700 "$ssh_dir"
+          touch "$auth_file"
+          chmod 600 "$auth_file"
+          printf '\n%s\n' "$rescue_line" >> "$auth_file"
+          echo "ACESSO PRONTO: ssh -t -i ~/.ssh/homelab_resgate -o IdentitiesOnly=yes runner@$ts_ip"
+          echo 'Confira o fingerprint do servidor. A passphrase protege a chave local.'
+          echo 'Depois, Password solicita a senha de gonella no servidor (su - gonella).'
           echo 'Janela de 60 minutos. Cancelar este workflow encerra o acesso temporario.'
 
           # O processo permanece ligado ao job; nao sobrevive ao seu encerramento.
