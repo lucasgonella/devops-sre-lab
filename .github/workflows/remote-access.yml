@@ -1,0 +1,108 @@
+name: Acesso temporario ao homelab
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: homelab-remote-access
+  cancel-in-progress: false
+
+jobs:
+  remote-access:
+    if: >-
+      github.repository == 'lucasgonella/devops-sre-lab' &&
+      github.ref == 'refs/heads/main' &&
+      github.actor == 'lucasgonella'
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 65
+    steps:
+      - name: Abrir acesso SSH temporario por 60 minutos
+        shell: bash
+        env:
+          TS_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+          EXPECTED_RUNNER: ${{ runner.name }}
+        run: |
+          set -Eeuo pipefail
+          set +x
+          umask 077
+
+          [[ "$EXPECTED_RUNNER" == runner01 ]] || { echo 'Runner inesperado.' >&2; exit 1; }
+          [[ -n "$TS_AUTHKEY" ]] || { echo 'Secret TAILSCALE_AUTHKEY ausente.' >&2; exit 1; }
+          [[ "$(uname -m)" == x86_64 ]] || exit 1
+          for tool in curl tar sha256sum ssh-keyscan ssh-keygen timeout; do
+            command -v "$tool" >/dev/null || { echo "Ferramenta ausente: $tool" >&2; exit 1; }
+          done
+
+          ts_dir=$(mktemp -d /tmp/homelab-ts.XXXXXX)
+          ts_pid=''
+          cleanup() {
+            set +e
+            if [[ -n "$ts_pid" ]]; then
+              timeout 10 "$ts_dir/tailscale" --socket="$ts_dir/tailscaled.sock" logout >/dev/null 2>&1
+              kill "$ts_pid" 2>/dev/null
+              wait "$ts_pid" 2>/dev/null
+            fi
+            rm -rf -- "$ts_dir"
+          }
+          trap cleanup EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+          printf '%s' "$TS_AUTHKEY" > "$ts_dir/authkey"
+          unset TS_AUTHKEY
+
+          # Confirmar SSH local antes de consumir a chave de uso unico.
+          ssh-keyscan -T 5 -t ed25519 127.0.0.1 > "$ts_dir/ssh-host.pub" 2>/dev/null
+          [[ -s "$ts_dir/ssh-host.pub" ]] || { echo 'SSH local indisponivel.' >&2; exit 1; }
+          echo 'Fingerprint SSH do runner01: confira ao conectar.'
+          ssh-keygen -lf "$ts_dir/ssh-host.pub"
+
+          # Binarios oficiais, sem sudo, sem checkout e sem instalacao no sistema.
+          ts_version=1.102.3
+          ts_url="https://pkgs.tailscale.com/stable/tailscale_${ts_version}_amd64.tgz"
+          curl -fsSL --retry 2 --connect-timeout 15 --max-time 120 "$ts_url" -o "$ts_dir/tailscale.tgz"
+          curl -fsSL --retry 2 --connect-timeout 15 --max-time 30 "$ts_url.sha256" -o "$ts_dir/checksum"
+          read -r ts_sha _ < "$ts_dir/checksum" || true
+          [[ "$ts_sha" =~ ^[0-9a-fA-F]{64}$ ]] || { echo 'Checksum invalido.' >&2; exit 1; }
+          printf '%s  %s\n' "$ts_sha" "$ts_dir/tailscale.tgz" | sha256sum -c -
+          tar -xzf "$ts_dir/tailscale.tgz" -C "$ts_dir" --strip-components=1 \
+            "tailscale_${ts_version}_amd64/tailscale" \
+            "tailscale_${ts_version}_amd64/tailscaled"
+
+          "$ts_dir/tailscaled" \
+            --tun=userspace-networking \
+            --state=mem: \
+            --socket="$ts_dir/tailscaled.sock" \
+            --port=0 > "$ts_dir/daemon.log" 2>&1 &
+          ts_pid=$!
+          for attempt in {1..30}; do
+            kill -0 "$ts_pid" 2>/dev/null || { echo 'Tailscaled encerrou antes da conexao.' >&2; exit 1; }
+            [[ -S "$ts_dir/tailscaled.sock" ]] && break
+            sleep 1
+          done
+          [[ -S "$ts_dir/tailscaled.sock" ]] || { echo 'Socket Tailscale indisponivel.' >&2; exit 1; }
+
+          if ! "$ts_dir/tailscale" --socket="$ts_dir/tailscaled.sock" up \
+            --auth-key="file:$ts_dir/authkey" \
+            --hostname=runner01-resgate \
+            --accept-dns=false \
+            --accept-routes=false \
+            --timeout=90s > "$ts_dir/auth.log" 2>&1; then
+            echo 'Falha ao autenticar. Confira a validade do secret e eventual aprovacao em Machines.' >&2
+            echo 'Chave de uso unico consumida exige gerar outra antes de repetir.' >&2
+            exit 1
+          fi
+          rm -f -- "$ts_dir/authkey"
+          ts_ip=$("$ts_dir/tailscale" --socket="$ts_dir/tailscaled.sock" ip -4)
+          [[ "$ts_ip" =~ ^100\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'IP Tailscale inesperado.' >&2; exit 1; }
+          echo "ACESSO PRONTO: ssh gonella@$ts_ip"
+          echo 'Use sua chave SSH habitual e confira o fingerprint acima.'
+          echo 'Janela de 60 minutos. Cancelar este workflow encerra o acesso temporario.'
+
+          # O processo permanece ligado ao job; nao sobrevive ao seu encerramento.
+          ts_deadline=$((SECONDS + 3600))
+          while (( SECONDS < ts_deadline )); do
+            kill -0 "$ts_pid" 2>/dev/null || { echo 'Conexao temporaria encerrada.' >&2; exit 1; }
+            sleep 15
+          done
